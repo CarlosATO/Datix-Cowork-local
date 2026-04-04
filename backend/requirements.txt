@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+langchain-google-genai
+python-dotenv
+google-generativeai
+langchain
+pypdf
+openpyxl
+pandas
+pyinstaller

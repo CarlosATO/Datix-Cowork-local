@@ -7,4 +7,9 @@ langchain
 pypdf
 openpyxl
 pandas
+python-docx
+chromadb
+langchain-chroma
+langchain-text-splitters
+langgraph
 pyinstaller

@@ -39,6 +39,9 @@ def build():
         "--copy-metadata=openpyxl",
         "--copy-metadata=pandas",
         "--copy-metadata=langchain",
+        "--copy-metadata=langchain_core",
+        "--copy-metadata=langgraph",
+        "--copy-metadata=python-docx",
         "--copy-metadata=fastapi",
         "--copy-metadata=uvicorn",
     ]

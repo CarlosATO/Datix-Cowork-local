@@ -11,7 +11,13 @@ from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmb
 from langchain_chroma import Chroma
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
-from tools import listar_archivos_carpeta, leer_contenido_archivo, leer_pdf, leer_excel
+from langgraph.prebuilt import create_react_agent
+from langchain_core.tools import tool
+from tools import (
+    listar_archivos_carpeta, leer_contenido_archivo, leer_pdf, leer_excel,
+    crear_carpeta_local, copiar_archivos_por_patron,
+    crear_archivo_texto, crear_archivo_word, crear_archivo_excel
+)
 
 # --- Gestión de Configuración Local ---
 CONFIG_DIR = Path.home() / ".gemini_cowork"
@@ -76,74 +82,73 @@ class SyncRequest(BaseModel):
 def healthcheck() -> dict[str, str]:
     return {"status": "ok"}
 
+@tool
+def consultar_memoria_local(pregunta: str) -> str:
+    """Busca en los recuerdos guardados y documentos indexados de Datix. Úsala cuando el usuario pregunte por algo histórico o general del negocio."""
+    db = get_vector_store()
+    if not db: return "Error: Memoria no disponible."
+    docs = db.similarity_search(pregunta, k=4)
+    if not docs: return "No hay recuerdos relevantes."
+    return "\n---\n".join([d.page_content for d in docs])
+
+@tool
+async def indexar_ruta(ruta: str) -> str:
+    """Aprende de una carpeta o archivo físico en el disco y lo indexa en memoria permanentemente."""
+    try:
+        sync_res = await kb_sync(SyncRequest(path=ruta))
+        return f"Éxito: He procesado {sync_res['count']} fragmentos de la ruta {ruta} y han sido añadidos a tu memoria local."
+    except Exception as e:
+        return f"Error al intentar indexar la ruta: {str(e)}"
+
 async def run_agent(llm, user_input: str, history: list[dict]) -> str:
-    """Agente con Memoria Inteligente Local (RAG) y contexto de conversación."""
-    system_prompt = """Eres Datix-Cerebro, un asistente IA COMPLETAMENTE AUTÓNOMO. Tienes MEMORIA INFINITA y ves el historial.
+    """Agente LangGraph estricto."""
+    system_prompt = """Eres 'Datix-Cerebro', un agente de inteligencia artificial operativo para Datix Soluciones Profesionales.
+    Tu objetivo principal no es charlar, sino EJECUTAR TAREAS en la computadora del usuario usando las herramientas disponibles.
     
-    TÚ interactúas con la PC del usuario a través de herramientas. EL USUARIO NO EJECUTA NADA, TÚ LO HACES.
-    Si necesitas ver qué hay en descargas, usa tu herramienta en formato JSON. NUNCA le pidas al usuario que ejecute el JSON.
-
-    HERRAMIENTAS:
-    - 'consultar_memoria_local': Buscar en tus recuerdos previos de documentos.
-    - 'indexar_ruta': Úsalo cuando el usuario te pida "Aprende de esta carpeta" o "Sincroniza esta ruta".
-    - 'listar_archivos_carpeta', 'leer_pdf', 'leer_contenido_archivo', 'leer_excel': Ver y leer archivos actuales.
-
-    Para usar una herramienta, DEBES escribir ÚNICAMENTE un bloque JSON con tu acción.
-    Ejemplo:
-    {"action": "listar_archivos_carpeta", "ruta": "C:\\Users\\carlo\\Downloads"}
+    REGLAS ESTRICTAS:
+    1. Si el usuario te pide crear documentos, resúmenes, informes o presupuestos físicos, DEBES usar crear_archivo_word, crear_archivo_excel o crear_archivo_texto en la ruta solicitada. Si pide listar, mover o copiar archivos, usa la herramienta correspondiente. NUNCA simules la respuesta.
+    2. NUNCA devuelvas una simulación de código. Si necesitas hacer algo, invoca la herramienta real.
+    3. Si una herramienta falla, informa al usuario el motivo exacto y no intentes inventar el resultado.
+    4. Sé directo, breve y profesional. No des largas descripciones a menos que se te pida analizar contenido.
     """
     
-    messages = [SystemMessage(content=system_prompt)]
+    tools_list = [
+        listar_archivos_carpeta, leer_contenido_archivo, leer_pdf, leer_excel,
+        crear_carpeta_local, copiar_archivos_por_patron,
+        crear_archivo_texto, crear_archivo_word, crear_archivo_excel,
+        consultar_memoria_local, indexar_ruta
+    ]
     
-    # Añadir historial de la conversación
-    for msg in history[-10:]: # Últimos 10 mensajes para mantener contexto sin saturar
+    agent = create_react_agent(llm, tools=tools_list, prompt=system_prompt)
+    
+    chat_history = []
+    for msg in history[-10:]:
         role = msg.get("role")
         content = msg.get("content", "")
-        if role == "user":
-            messages.append(HumanMessage(content=content))
-        elif role == "assistant":
-            messages.append(AIMessage(content=content))
-            
-    messages.append(HumanMessage(content=user_input))
-    
-    response = llm.invoke(messages)
-    text = response.content
-    
-    try:
-        # Extraer JSON de la respuesta usando expresiones regulares (por si viene en bloque markdown)
-        json_match = re.search(r'(\{[\s\S]*\})', text)
+        if role == "user": chat_history.append(HumanMessage(content=content))
+        elif role == "assistant": chat_history.append(AIMessage(content=content))
         
-        if json_match:
-            action_json = json.loads(json_match.group(1))
-            action = action_json.get("action")
-            
-            if action == "consultar_memoria_local":
-                db = get_vector_store()
-                docs = db.similarity_search(action_json.get("pregunta", user_input), k=4)
-                contexto = "\n---\n".join([d.page_content for d in docs])
-                return llm.invoke([
-                    SystemMessage(content="Responde basándote en estos recuerdos:"),
-                    HumanMessage(content=f"Contexto: {contexto}\nPregunta: {user_input}")
-                ]).content
-
-            elif action == "indexar_ruta":
-                ruta = action_json.get("path", "")
-                sync_res = await kb_sync(SyncRequest(path=ruta))
-                return f"✅ ¡Entendido! He procesado {sync_res['count']} fragmentos de {ruta} y ahora los recordaré para siempre."
-
-            elif action == "listar_archivos_carpeta":
-                res = listar_archivos_carpeta.invoke({"ruta": action_json.get("ruta", ".")})
-                return llm.invoke([SystemMessage(content="Resume la lista:"), HumanMessage(content=res)]).content
-
+    try:
+        result = await agent.ainvoke(
+            {"messages": chat_history + [HumanMessage(content=user_input)]},
+            {"recursion_limit": 10}
+        )
+        last_msg = result["messages"][-1]
+        content = last_msg.content
+        
+        # Gemini 2.5 puede devolver content como lista de bloques
+        if isinstance(content, list):
+            text_parts = [block.get("text", "") for block in content if isinstance(block, dict) and block.get("type") == "text"]
+            return "\n".join(text_parts) if text_parts else str(content)
+        return content
     except Exception as e:
         print(f"Error Agente: {e}")
-        
-    return text
+        return f"Error de ejecución: {str(e)}"
 
 @app.post("/config/save")
 async def config_save(request: ConfigRequest):
     try:
-        llm = ChatGoogleGenerativeAI(model="models/gemini-2.5-flash", google_api_key=request.api_key)
+        llm = ChatGoogleGenerativeAI(model="models/gemini-2.5-flash", google_api_key=request.api_key, temperature=0)
         llm.invoke([HumanMessage(content="test")])
         save_api_key(request.api_key)
         return {"status": "success"}
@@ -192,7 +197,7 @@ async def ask(request: QueryRequest):
     api_key = get_stored_api_key()
     if not api_key: raise HTTPException(status_code=401, detail="Sin clave")
     
-    llm = ChatGoogleGenerativeAI(model="models/gemini-2.5-flash", google_api_key=api_key)
+    llm = ChatGoogleGenerativeAI(model="models/gemini-2.5-flash", google_api_key=api_key, temperature=0)
     output = await run_agent(llm, request.prompt, request.history)
     return {"response": output}
 

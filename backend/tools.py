@@ -1,4 +1,8 @@
 import os
+import json
+import shutil
+import pandas as pd
+from docx import Document
 from langchain_core.tools import tool
 
 
@@ -271,3 +275,113 @@ def leer_excel(ruta_excel: str, hoja: str = None, max_filas: int = 1000) -> str:
         return f"❌ Error: Permiso denegado para leer '{ruta_excel}'."
     except Exception as e:
         return f"❌ Error al leer Excel/CSV: {str(e)}"
+
+@tool
+def crear_carpeta_local(ruta: str) -> str:
+    r"""
+    Crea una nueva carpeta en la ruta especificada en el disco duro del usuario.
+    Ejemplo de ruta válida en Windows: 'C:\Users\carlo\Desktop\MiCarpeta'
+    
+    Args:
+        ruta: La ruta absoluta donde se debe crear la carpeta.
+        
+    Returns:
+        Un mensaje de éxito o el error detallado si falla.
+    """
+    try:
+        os.makedirs(ruta, exist_ok=True)
+        return f"Éxito: La carpeta ha sido creada en {ruta}."
+    except Exception as e:
+        return f"Error al crear la carpeta: {str(e)}"
+
+@tool
+def copiar_archivos_por_patron(ruta_origen: str, ruta_destino: str, patron_nombre: str) -> str:
+    """
+    Busca archivos en 'ruta_origen' cuyo nombre contenga 'patron_nombre' y los copia a 'ruta_destino'.
+    Útil para organizar archivos masivamente.
+    
+    Args:
+        ruta_origen: Carpeta donde se buscarán los archivos.
+        ruta_destino: Carpeta donde se pegarán los archivos.
+        patron_nombre: Texto que debe estar incluido en el nombre del archivo (ej. 'Salida_de_Bodega').
+        
+    Returns:
+        Un resumen de cuántos archivos se copiaron con éxito.
+    """
+    if not os.path.exists(ruta_origen):
+        return f"Error: La ruta de origen {ruta_origen} no existe."
+    if not os.path.exists(ruta_destino):
+        return f"Error: La ruta de destino {ruta_destino} no existe. Créala primero usando crear_carpeta_local."
+        
+    archivos_copiados = 0
+    try:
+        for nombre_archivo in os.listdir(ruta_origen):
+            if patron_nombre.lower() in nombre_archivo.lower():
+                ruta_completa_origen = os.path.join(ruta_origen, nombre_archivo)
+                if os.path.isfile(ruta_completa_origen):
+                    ruta_completa_destino = os.path.join(ruta_destino, nombre_archivo)
+                    shutil.copy2(ruta_completa_origen, ruta_completa_destino)
+                    archivos_copiados += 1
+                    
+        if archivos_copiados > 0:
+            return f"Éxito: Se copiaron {archivos_copiados} archivos que coinciden con '{patron_nombre}' a {ruta_destino}."
+        else:
+            return f"Aviso: No se encontraron archivos que contengan '{patron_nombre}' en la ruta de origen."
+            
+    except Exception as e:
+        return f"Error durante la copia: {str(e)}"
+
+
+@tool
+def crear_archivo_texto(ruta: str, contenido: str) -> str:
+    r"""
+    Crea un archivo de texto plano (.txt, .md, .csv, .json) en el disco duro local.
+
+    Args:
+        ruta: La ruta absoluta con el nombre y extensión del archivo (ej. 'C:\Docs\resumen.txt').
+        contenido: El texto completo que se escribirá en el archivo.
+    """
+    try:
+        with open(ruta, 'w', encoding='utf-8') as f:
+            f.write(contenido)
+        return f"Éxito: Archivo de texto creado y guardado en {ruta}"
+    except Exception as e:
+        return f"Error al crear archivo de texto: {str(e)}"
+
+
+@tool
+def crear_archivo_word(ruta: str, contenido: str) -> str:
+    r"""
+    Crea un documento formal de Microsoft Word (.docx).
+    Usa esta herramienta cuando el usuario pida generar informes, actas, contratos o presupuestos.
+
+    Args:
+        ruta: Ruta absoluta del archivo terminada en .docx (ej. 'C:\Desktop\Presupuesto_Somyl.docx').
+        contenido: El texto que irá dentro del documento.
+    """
+    try:
+        doc = Document()
+        doc.add_paragraph(contenido)
+        doc.save(ruta)
+        return f"Éxito: Documento Word (.docx) creado exitosamente en {ruta}"
+    except Exception as e:
+        return f"Error al crear documento Word: {str(e)}"
+
+
+@tool
+def crear_archivo_excel(ruta: str, datos_json: str) -> str:
+    r"""
+    Crea un archivo de Excel (.xlsx) a partir de datos estructurados.
+
+    Args:
+        ruta: Ruta absoluta del archivo terminada en .xlsx (ej. 'C:\Docs\Inventario.xlsx').
+        datos_json: Un string en formato JSON válido que represente una lista de diccionarios.
+                    Ejemplo: '[{"Item": "Cable", "Cant": 10}, {"Item": "Router", "Cant": 2}]'
+    """
+    try:
+        datos = json.loads(datos_json)
+        df = pd.DataFrame(datos)
+        df.to_excel(ruta, index=False)
+        return f"Éxito: Archivo Excel (.xlsx) generado correctamente en {ruta}"
+    except Exception as e:
+        return f"Error al generar Excel: {str(e)}"

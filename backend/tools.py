@@ -2,8 +2,22 @@ import os
 import json
 import shutil
 import pandas as pd
+from pathlib import Path
 from docx import Document
 from langchain_core.tools import tool
+
+# Directorio de configuración global (coherente con main.py)
+CONFIG_DIR = Path.home() / ".gemini_cowork"
+INDEX_FILE = CONFIG_DIR / "file_index.json"
+
+# Función de ayuda para IA local (evitar importación circular si fuera necesario, 
+# pero aquí ai_engine es independiente)
+def _get_local_ai_response(prompt: str) -> str:
+    try:
+        from ai_engine import query_gemma4
+        return query_gemma4(prompt)
+    except Exception as e:
+        return f"Error al acceder al motor local: {str(e)}"
 
 
 @tool
@@ -385,3 +399,475 @@ def crear_archivo_excel(ruta: str, datos_json: str) -> str:
         return f"Éxito: Archivo Excel (.xlsx) generado correctamente en {ruta}"
     except Exception as e:
         return f"Error al generar Excel: {str(e)}"
+
+
+@tool
+def indexar_directorios_principales() -> str:
+    r"""
+    Escanea los directorios clave del usuario (Descargas, Escritorio, Documentos y OneDrive) 
+    y guarda un mapa de rutas en un archivo local.
+    
+    Esta herramienta debe ejecutarse al menos una vez para que el agente pueda
+    encontrar archivos sin que el usuario proporcione rutas absolutas.
+    
+    Returns:
+        str: Mensaje indicando cuántos archivos fueron indexados.
+    """
+    home = str(Path.home())
+    
+    # Buscar OneDrive dinámicamente (puede tener diferentes nombres)
+    onedrive_path = None
+    try:
+        for d in os.listdir(home):
+            full_path = os.path.join(home, d)
+            if "OneDrive" in d and os.path.isdir(full_path):
+                onedrive_path = full_path
+                break
+    except:
+        pass
+    
+    directorios_a_escanear = [
+        os.path.join(home, "Downloads"),
+        os.path.join(home, "Desktop"),
+        os.path.join(home, "Documents")
+    ]
+    if onedrive_path:
+        directorios_a_escanear.append(onedrive_path)
+    
+    index = {}
+    archivos_encontrados = 0
+    
+    try:
+        # Asegurar que el directorio de configuración exista
+        INDEX_FILE.parent.mkdir(parents=True, exist_ok=True)
+        
+        for directorio in directorios_a_escanear:
+            if not os.path.exists(directorio):
+                continue
+            for root, dirs, files in os.walk(directorio):
+                for name in dirs + files:
+                    index[name.lower()] = os.path.join(root, name)
+                    archivos_encontrados += 1
+                    
+        with open(INDEX_FILE, "w", encoding="utf-8") as f:
+            json.dump(index, f)
+            
+        return f"✅ Éxito: Indexación completa. Se han mapeado {archivos_encontrados} archivos y carpetas en la memoria del agente."
+    except Exception as e:
+        return f"❌ Error durante la indexación: {str(e)}"
+
+
+@tool
+def buscar_ruta_en_indice(nombre: str) -> str:
+    r"""
+    Busca la ruta absoluta de un archivo o carpeta en el índice local.
+    
+    Úsalo SIEMPRE que el usuario mencione un archivo pero no dé la ruta completa.
+    Por ejemplo: 'busca la orden 3752', 'abre el archivo ventas.xlsx', etc.
+    
+    Args:
+        nombre: Nombre completo o parcial del archivo/carpeta a buscar.
+    
+    Returns:
+        str: La ruta encontrada, múltiples coincidencias, o un error si no existe el índice.
+    """
+    if not INDEX_FILE.exists():
+        return "⚠️ El índice no existe. Pregunta al usuario si desea que escanees su PC ejecutando 'indexar_directorios_principales'."
+        
+    try:
+        with open(INDEX_FILE, "r", encoding="utf-8") as f:
+            index = json.load(f)
+            
+        nombre_lower = nombre.lower()
+        
+        # 1. Búsqueda exacta
+        if nombre_lower in index:
+            return f"✅ Ruta exacta encontrada: {index[nombre_lower]}"
+            
+        # 2. Búsqueda parcial (contiene la palabra)
+        coincidencias = [ruta for clave, ruta in index.items() if nombre_lower in clave]
+        if coincidencias:
+            if len(coincidencias) == 1:
+                return f"✅ Ruta encontrada: {coincidencias[0]}"
+            # Devolvemos máximo 10 para no saturar
+            return "📋 Se encontraron múltiples coincidencias:\n" + "\n".join(coincidencias[:10])
+            
+        return f"❌ No se encontró nada que coincida con '{nombre}' en el índice."
+    except Exception as e:
+        return f"❌ Error al buscar en el índice: {str(e)}"
+
+
+@tool
+def abrir_archivo_o_aplicacion(ruta_o_nombre: str) -> str:
+    r"""
+    Abre un archivo, carpeta, aplicación o URL con la aplicación predeterminada del sistema.
+    
+    Esta herramienta es FUNDAMENTAL. Úsala cuando el usuario diga:
+    - "Abre el archivo ventas.xlsx"
+    - "Abre Excel" o "Abre Chrome" o "Abre Word"
+    - "Abre la carpeta de descargas"
+    - "Abre google.com"
+    
+    Args:
+        ruta_o_nombre: Puede ser:
+            - Ruta completa a un archivo (C:\Users\...\archivo.xlsx)
+            - Nombre de aplicación (chrome, excel, word, notepad, code)
+            - URL (https://google.com)
+            - Ruta a una carpeta
+    
+    Returns:
+        Mensaje de éxito o error.
+    """
+    import subprocess
+    import webbrowser
+    
+    # Mapeo de nombres comunes a ejecutables de Windows
+    aplicaciones_comunes = {
+        "chrome": "chrome",
+        "google chrome": "chrome",
+        "firefox": "firefox",
+        "edge": "msedge",
+        "microsoft edge": "msedge",
+        "word": "winword",
+        "microsoft word": "winword",
+        "excel": "excel",
+        "microsoft excel": "excel",
+        "powerpoint": "powerpnt",
+        "outlook": "outlook",
+        "notepad": "notepad",
+        "bloc de notas": "notepad",
+        "calculadora": "calc",
+        "calculator": "calc",
+        "explorador": "explorer",
+        "explorer": "explorer",
+        "cmd": "cmd",
+        "terminal": "cmd",
+        "powershell": "powershell",
+        "code": "code",
+        "visual studio code": "code",
+        "vscode": "code",
+        "paint": "mspaint",
+        "spotify": "spotify",
+        "teams": "teams",
+        "microsoft teams": "teams",
+        "slack": "slack",
+        "zoom": "zoom",
+    }
+    
+    try:
+        nombre_lower = ruta_o_nombre.lower().strip()
+        
+        # 1. Verificar si es una URL
+        if nombre_lower.startswith(('http://', 'https://', 'www.')):
+            url = ruta_o_nombre if ruta_o_nombre.startswith('http') else f'https://{ruta_o_nombre}'
+            webbrowser.open(url)
+            return f"✅ URL abierta en el navegador: {url}"
+        
+        # 2. Verificar si es un nombre de aplicación común
+        if nombre_lower in aplicaciones_comunes:
+            app = aplicaciones_comunes[nombre_lower]
+            subprocess.Popen(app, shell=True)
+            return f"✅ Aplicación iniciada: {ruta_o_nombre}"
+        
+        # 3. Verificar si es una ruta existente (archivo o carpeta)
+        ruta_abs = os.path.abspath(ruta_o_nombre)
+        if os.path.exists(ruta_abs):
+            os.startfile(ruta_abs)
+            tipo = "Carpeta" if os.path.isdir(ruta_abs) else "Archivo"
+            return f"✅ {tipo} abierto: {ruta_abs}"
+        
+        # 4. Intentar buscar en el índice si no encontró nada
+        if INDEX_FILE.exists():
+            with open(INDEX_FILE, "r", encoding="utf-8") as f:
+                index = json.load(f)
+            
+            if nombre_lower in index:
+                ruta_encontrada = index[nombre_lower]
+                os.startfile(ruta_encontrada)
+                return f"✅ Archivo abierto desde índice: {ruta_encontrada}"
+            
+            # Búsqueda parcial
+            for clave, ruta in index.items():
+                if nombre_lower in clave:
+                    os.startfile(ruta)
+                    return f"✅ Archivo abierto: {ruta}"
+        
+        # 5. Último intento: ejecutar como comando
+        try:
+            subprocess.Popen(ruta_o_nombre, shell=True)
+            return f"✅ Comando ejecutado: {ruta_o_nombre}"
+        except:
+            pass
+        
+        return f"❌ No se encontró '{ruta_o_nombre}'. Verifica que exista o esté instalado."
+        
+    except PermissionError:
+        return f"❌ Permiso denegado para abrir '{ruta_o_nombre}'."
+    except Exception as e:
+        return f"❌ Error al abrir: {str(e)}"
+
+
+# --- MEMORIA PERMANENTE ---
+USER_MEMORY_FILE = CONFIG_DIR / "user_memory.json"
+CONVERSATION_MEMORIES_DIR = CONFIG_DIR / "conversation_memories"
+
+def _load_user_memory() -> dict:
+    """Carga la memoria del usuario desde el archivo JSON."""
+    if USER_MEMORY_FILE.exists():
+        try:
+            with open(USER_MEMORY_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except:
+            pass
+    return {}
+
+def _save_user_memory(data: dict):
+    """Guarda la memoria del usuario en el archivo JSON."""
+    USER_MEMORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(USER_MEMORY_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+def _get_conversation_memory_file(conversation_id: str) -> Path:
+    """Obtiene la ruta del archivo de memoria de una conversación."""
+    CONVERSATION_MEMORIES_DIR.mkdir(parents=True, exist_ok=True)
+    return CONVERSATION_MEMORIES_DIR / f"{conversation_id}.json"
+
+def _load_conversation_memory(conversation_id: str) -> dict:
+    """Carga la memoria de una conversación específica."""
+    memory_file = _get_conversation_memory_file(conversation_id)
+    if memory_file.exists():
+        try:
+            with open(memory_file, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except:
+            pass
+    return {"hechos": [], "archivos_usados": [], "tareas_realizadas": [], "notas": []}
+
+def _save_conversation_memory(conversation_id: str, data: dict):
+    """Guarda la memoria de una conversación."""
+    memory_file = _get_conversation_memory_file(conversation_id)
+    with open(memory_file, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+def eliminar_memoria_conversacion(conversation_id: str):
+    """Elimina la memoria asociada a una conversación. Llamar desde main.py al eliminar conversación."""
+    memory_file = _get_conversation_memory_file(conversation_id)
+    if memory_file.exists():
+        memory_file.unlink()
+
+
+@tool
+def guardar_dato_usuario(clave: str, valor: str) -> str:
+    """
+    Guarda información PERMANENTE del usuario (nombre, edad, empresa, preferencias).
+    
+    IMPORTANTE: Usa esto para datos que NO cambian o cambian raramente.
+    Esta información persiste PARA SIEMPRE hasta que se borre manualmente.
+    
+    Args:
+        clave: Tipo de dato (nombre, edad, empresa, email, telefono, cargo, etc.)
+        valor: El valor a guardar
+    
+    Ejemplos:
+        - "Mi nombre es Carlos" → guardar_dato_usuario("nombre", "Carlos")
+        - "Trabajo en Somyl" → guardar_dato_usuario("empresa", "Somyl")
+    """
+    try:
+        memoria = _load_user_memory()
+        # Case insensitive para la clave
+        clave_lower = clave.lower().strip()
+        memoria[clave_lower] = valor
+        _save_user_memory(memoria)
+        return f"✅ Guardado permanentemente: {clave} = '{valor}'"
+    except Exception as e:
+        return f"❌ Error al guardar: {str(e)}"
+
+
+@tool
+def obtener_dato_usuario(clave: str) -> str:
+    """
+    Recupera un dato específico del usuario.
+    
+    Args:
+        clave: Qué dato buscar (nombre, edad, empresa, etc.) - NO importa mayúsculas/minúsculas
+    """
+    try:
+        memoria = _load_user_memory()
+        clave_lower = clave.lower().strip()
+        
+        # Búsqueda exacta
+        if clave_lower in memoria:
+            return f"{clave.capitalize()}: {memoria[clave_lower]}"
+        
+        # Búsqueda parcial
+        for k, v in memoria.items():
+            if clave_lower in k or k in clave_lower:
+                return f"{k.capitalize()}: {v}"
+        
+        return f"No tengo guardado '{clave}' del usuario."
+    except Exception as e:
+        return f"❌ Error: {str(e)}"
+
+
+@tool
+def obtener_todos_datos_usuario() -> str:
+    """
+    Recupera TODA la información guardada del usuario.
+    
+    Úsalo al INICIO de cada conversación para recordar quién es el usuario.
+    """
+    try:
+        memoria = _load_user_memory()
+        if not memoria:
+            return "No tengo información del usuario guardada todavía."
+        
+        info = []
+        for clave, valor in memoria.items():
+            info.append(f"• {clave.capitalize()}: {valor}")
+        
+        return "📋 Perfil del usuario:\n" + "\n".join(info)
+    except Exception as e:
+        return f"❌ Error: {str(e)}"
+
+
+@tool
+def guardar_en_memoria(conversation_id: str, tipo: str, contenido: str) -> str:
+    """
+    Guarda información en la memoria de la conversación actual.
+    
+    DEBES usar esto para registrar TODO lo importante que ocurre:
+    - Archivos creados, abiertos o modificados
+    - Tareas completadas
+    - Hechos importantes mencionados
+    - Notas o recordatorios
+    
+    Args:
+        conversation_id: ID de la conversación actual
+        tipo: Categoría (hecho, archivo, tarea, nota)
+        contenido: Descripción de lo que guardar
+    
+    Ejemplos:
+        - guardar_en_memoria(id, "archivo", "Creé documento ventas.docx en Escritorio")
+        - guardar_en_memoria(id, "hecho", "Usuario mencionó que tiene reunión el lunes")
+        - guardar_en_memoria(id, "tarea", "Organicé 50 archivos en la carpeta Documentos")
+    """
+    try:
+        memoria = _load_conversation_memory(conversation_id)
+        
+        tipo_lower = tipo.lower().strip()
+        if tipo_lower in ["hecho", "hechos", "fact"]:
+            memoria["hechos"].append(contenido)
+        elif tipo_lower in ["archivo", "archivos", "file"]:
+            memoria["archivos_usados"].append(contenido)
+        elif tipo_lower in ["tarea", "tareas", "task"]:
+            memoria["tareas_realizadas"].append(contenido)
+        else:
+            memoria["notas"].append(contenido)
+        
+        _save_conversation_memory(conversation_id, memoria)
+        return f"✅ Guardado en memoria: [{tipo}] {contenido}"
+    except Exception as e:
+        return f"❌ Error: {str(e)}"
+
+@tool
+def process_text_locally(text: str, instruction: str) -> str:
+    """
+    Procesa un texto de forma LOCAL usando el modelo Gemma 4 a través de Ollama.
+    Úsalo para resumir, extraer datos, o analizar información sensible sin enviarla a la nube.
+    
+    Args:
+        text (str): El texto a procesar.
+        instruction (str): La instrucción específica (ej. 'Resume este texto', 'Extrae los montos en dólares').
+    """
+    prompt = f"### Instrucción:\n{instruction}\n\n### Texto:\n{text}\n\n### Respuesta:"
+    return _get_local_ai_response(prompt)
+
+
+@tool
+def obtener_memoria_conversacion(conversation_id: str) -> str:
+    """
+    Recupera TODO lo guardado en la memoria de esta conversación.
+    
+    Úsalo para recordar qué se hizo anteriormente en esta conversación.
+    
+    Args:
+        conversation_id: ID de la conversación
+    """
+    try:
+        memoria = _load_conversation_memory(conversation_id)
+        
+        if not any(memoria.values()):
+            return "Esta conversación no tiene memoria guardada todavía."
+        
+        resultado = ["📚 MEMORIA DE ESTA CONVERSACIÓN:"]
+        
+        if memoria.get("hechos"):
+            resultado.append("\n🔹 Hechos importantes:")
+            for h in memoria["hechos"]:
+                resultado.append(f"  • {h}")
+        
+        if memoria.get("archivos_usados"):
+            resultado.append("\n📁 Archivos trabajados:")
+            for a in memoria["archivos_usados"]:
+                resultado.append(f"  • {a}")
+        
+        if memoria.get("tareas_realizadas"):
+            resultado.append("\n✅ Tareas completadas:")
+            for t in memoria["tareas_realizadas"]:
+                resultado.append(f"  • {t}")
+        
+        if memoria.get("notas"):
+            resultado.append("\n📝 Notas:")
+            for n in memoria["notas"]:
+                resultado.append(f"  • {n}")
+        
+        return "\n".join(resultado)
+    except Exception as e:
+        return f"❌ Error: {str(e)}"
+
+
+@tool  
+def buscar_en_todas_memorias(termino: str) -> str:
+    """
+    Busca un término en TODAS las memorias de conversaciones anteriores.
+    
+    Úsalo cuando el usuario pregunte por algo que pudo haber mencionado antes
+    pero no recuerdas en qué conversación.
+    
+    Args:
+        termino: Palabra o frase a buscar (NO importa mayúsculas/minúsculas)
+    """
+    try:
+        if not CONVERSATION_MEMORIES_DIR.exists():
+            return "No hay memorias de conversaciones anteriores."
+        
+        termino_lower = termino.lower()
+        resultados = []
+        
+        for memory_file in CONVERSATION_MEMORIES_DIR.glob("*.json"):
+            try:
+                with open(memory_file, "r", encoding="utf-8") as f:
+                    memoria = json.load(f)
+                
+                conv_id = memory_file.stem
+                encontrados = []
+                
+                for categoria, items in memoria.items():
+                    if isinstance(items, list):
+                        for item in items:
+                            if termino_lower in item.lower():
+                                encontrados.append(f"[{categoria}] {item}")
+                
+                if encontrados:
+                    resultados.append(f"\n📌 Conversación {conv_id}:")
+                    resultados.extend([f"  • {e}" for e in encontrados])
+            except:
+                continue
+        
+        if not resultados:
+            return f"No encontré '{termino}' en ninguna conversación anterior."
+        
+        return f"🔍 Resultados para '{termino}':" + "\n".join(resultados)
+    except Exception as e:
+        return f"❌ Error: {str(e)}"
+

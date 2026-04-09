@@ -157,31 +157,15 @@ Ver sección anterior en "Solución de problemas".
 
 compilar
 
-
-Sal de la carpeta backend (vuelve a la principal):
-
-powershell
-cd ..
- D:\Gemini-Cowork-Local
-
-Activa el entorno (ahora sí, desde la ruta corregida):
-
-powershell
+cd D:\Gemini-Cowork-Local
 .\backend\.venv\Scripts\Activate.ps1
-
-Intrucciones para ejecuta el compilador del motor:
-
-powershell
 python build_backend.py
-
-Cuando termine, entra en la carpeta frontend para el empaquetado final:
-
-powershell
 cd frontend
 npm run tauri build
 
-
-antes de instalar borrar cualqrui rastro con : 
-
 taskkill /F /IM backend-api.exe /IM app.exe
 
+pruebas locales sin compilar: 
+
+cd frontend
+npm run tauri dev

@@ -1,6 +1,9 @@
 fastapi
 uvicorn
 langchain-google-genai
+langchain-groq
+langchain-together
+langchain-openai
 python-dotenv
 google-generativeai
 langchain
@@ -12,4 +15,7 @@ chromadb
 langchain-chroma
 langchain-text-splitters
 langgraph
+langgraph-checkpoint-sqlite
+aiosqlite
 pyinstaller
+ollama

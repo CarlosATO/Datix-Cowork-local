@@ -30,6 +30,7 @@ def build():
         "--hidden-import=uvicorn.loops.auto",
         "--hidden-import=uvicorn.protocols.http.auto",
         "--hidden-import=uvicorn.protocols.websockets.auto",
+        "--hidden-import=ollama",
         # Add any other hidden imports your app might need
     ]
     
@@ -44,6 +45,7 @@ def build():
         "--copy-metadata=python-docx",
         "--copy-metadata=fastapi",
         "--copy-metadata=uvicorn",
+        "--copy-metadata=ollama",
     ]
 
     command = [
